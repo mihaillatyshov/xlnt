@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.1...3.31)
+cmake_minimum_required(VERSION 3.1...4.3)
 project(xlnt VERSION 1.6.1)
 
 set(CMAKE_CXX_STANDARD ${XLNT_CXX_LANG})
@@ -44,6 +44,12 @@ elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pedantic-errors") # avoid code being pushed with pedantic warnings
     If (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 10.1)
       set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wmismatched-tags") # avoid struct/class (forward) declaration mismatch, as MSVC doesn't like it
+    endif()
+    # False positives show up beginning with GCC 15.1 and occur until at least GCC 16.2 (newer versions have not yet been tested)
+    # See https://github.com/xlnt-community/xlnt/pull/152
+    if (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 15.0 AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 16.3)
+      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-array-bounds")
+      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-stringop-overflow")
     endif()
   endif()
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unknown-pragmas") # ignore MSVC and Clang pragmas

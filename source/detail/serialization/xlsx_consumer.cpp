@@ -534,7 +534,7 @@ void read_defined_names(worksheet ws, std::vector<defined_name> defined_names)
         }
         else if (name.name == "_xlnm._FilterDatabase")
         {
-            auto i = name.value.find("!");
+            auto i = name.value.find('!');
             auto ref = name.value.substr(i + 1);
             if (is_valid_reference(ref))
             {
@@ -543,7 +543,7 @@ void read_defined_names(worksheet ws, std::vector<defined_name> defined_names)
         }
         else if (name.name == "_xlnm.Print_Area")
         {
-            auto i = name.value.find("!");
+            auto i = name.value.find('!');
             auto ref = name.value.substr(i + 1);
             if (is_valid_reference(ref))
             {
@@ -563,11 +563,16 @@ std::string xlsx_consumer::read_worksheet_begin(const std::string &rel_id)
     array_formulae_.clear();
     shared_formulae_.clear();
 
-    auto title = std::find_if(target_.d_->sheet_title_rel_id_map_.begin(),
+    auto it_title = std::find_if(target_.d_->sheet_title_rel_id_map_.begin(),
         target_.d_->sheet_title_rel_id_map_.end(),
-        [&](const std::pair<std::string, std::string> &p) {
+        [&rel_id](const std::pair<std::string, std::string> &p) {
             return p.second == rel_id;
-        })->first;
+        });
+    if (it_title == target_.d_->sheet_title_rel_id_map_.end())
+    {
+        throw xlnt::key_not_found(rel_id);
+    }
+    const auto &title = it_title->first;
 
     auto ws = worksheet(current_worksheet_);
 
@@ -836,7 +841,7 @@ std::string xlsx_consumer::read_worksheet_begin(const std::string &rel_id)
 #endif
 
                 // avoid uninitialised warnings in GCC by using a lambda to make the conditional initialisation
-                optional<double> width = [this](xml::parser &p) -> xlnt::optional<double> {
+                optional<double> width = [](xml::parser &p) -> xlnt::optional<double> {
                     if (p.attribute_present("width"))
                     {
                         return (xlnt::detail::deserialise(p.attribute("width")) * 7 - 5) / 7;
@@ -1070,7 +1075,7 @@ worksheet xlsx_consumer::read_worksheet_end(const std::string &rel_id)
 
                     if (hyperlink_rel != hyperlinks.end())
                     {
-                        auto url = hyperlink_rel->target().path().string();
+                        auto url = hyperlink_rel->target().to_string();
 
                         if (cell.has_value())
                         {
@@ -1278,8 +1283,8 @@ worksheet xlsx_consumer::read_worksheet_end(const std::string &rel_id)
         }
         else if (current_worksheet_element == qn("spreadsheetml", "rowBreaks")) // CT_PageBreak 0-1
         {
-            auto count = parser().attribute_present("count") ? parser().attribute<std::size_t>("count") : 0;
-            auto manual_break_count = parser().attribute_present("manualBreakCount")
+            XLNT_UNUSED auto count = parser().attribute_present("count") ? parser().attribute<std::size_t>("count") : 0;
+            XLNT_UNUSED auto manual_break_count = parser().attribute_present("manualBreakCount")
                 ? parser().attribute<std::size_t>("manualBreakCount")
                 : 0;
 
@@ -1304,8 +1309,8 @@ worksheet xlsx_consumer::read_worksheet_end(const std::string &rel_id)
         }
         else if (current_worksheet_element == qn("spreadsheetml", "colBreaks")) // CT_PageBreak 0-1
         {
-            auto count = parser().attribute_present("count") ? parser().attribute<std::size_t>("count") : 0;
-            auto manual_break_count = parser().attribute_present("manualBreakCount")
+            XLNT_UNUSED auto count = parser().attribute_present("count") ? parser().attribute<std::size_t>("count") : 0;
+            XLNT_UNUSED auto manual_break_count = parser().attribute_present("manualBreakCount")
                 ? parser().attribute<std::size_t>("manualBreakCount")
                 : 0;
 
@@ -1700,7 +1705,8 @@ std::vector<relationship> xlsx_consumer::read_relationships(const path &part)
 
         if (target.path().is_absolute() && target_mode == xlnt::target_mode::internal)
         {
-            target = uri(target.path().relative_to(path(part.string()).resolve(path("/"))).string());
+            const auto source_directory = part.parent().resolve(path("/"));
+            target = uri(target.path().relative_to(source_directory).string());
         }
 
         relationships.emplace_back(parser.attribute("Id"),
@@ -2313,11 +2319,16 @@ void xlsx_consumer::read_office_document(const std::string &content_type) // CT_
 
     for (auto worksheet_rel : manifest().relationships(workbook_path, relationship_type::worksheet))
     {
-        auto title = std::find_if(target_.d_->sheet_title_rel_id_map_.begin(),
+        auto it_title = std::find_if(target_.d_->sheet_title_rel_id_map_.begin(),
             target_.d_->sheet_title_rel_id_map_.end(),
-            [&](const std::pair<std::string, std::string> &p) {
+            [&worksheet_rel](const std::pair<std::string, std::string> &p) {
                 return p.second == worksheet_rel.id();
-            })->first;
+            });
+        if (it_title == target_.d_->sheet_title_rel_id_map_.end())
+        {
+            throw xlnt::key_not_found(worksheet_rel.id());
+        }
+        const auto &title = it_title->first;
 
         auto id = sheet_title_id_map_[title];
         auto index = sheet_title_index_map_[title];
@@ -2980,7 +2991,7 @@ void xlsx_consumer::read_stylesheet()
         }
         else if (current_style_element == qn("spreadsheetml", "dxfs"))
         {
-            std::size_t processed = 0;
+            XLNT_UNUSED std::size_t processed = 0;
 
             while (in_element(current_style_element))
             {
@@ -3006,7 +3017,7 @@ void xlsx_consumer::read_stylesheet()
             skip_attribute("defaultTableStyle");
             skip_attribute("defaultPivotStyle");
 
-            std::size_t processed = 0;
+            XLNT_UNUSED std::size_t processed = 0;
 
             while (in_element(qn("spreadsheetml", "tableStyles")))
             {

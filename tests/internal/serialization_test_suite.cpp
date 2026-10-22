@@ -29,6 +29,7 @@
 #include <helpers/test_suite.hpp>
 #include <helpers/internal/xml_helper.hpp>
 #include <detail/serialization/xlsx_consumer.hpp>
+#include <detail/serialization/xlsx_producer.hpp>
 #include <xlnt/internal/features.hpp>
 
 #if XLNT_HAS_INCLUDE(<string_view>) && XLNT_HAS_FEATURE(U8_STRING_VIEW)
@@ -55,6 +56,9 @@ public:
         register_test(test_read_unicode_filename);
         register_test(test_write_unicode_filename);
         register_test(test_comments);
+        register_test(test_invalid_worksheet_title);
+        register_test(test_write_invalid_relationship);
+        register_test(test_read_rooted_image_relationship);
         register_test(test_read_hyperlink);
         register_test(test_read_formulae);
         register_test(test_read_headers_and_footers);
@@ -76,6 +80,9 @@ public:
         register_test(test_streaming_read);
         register_test(test_streaming_write);
         register_test(test_load_save_german_locale);
+#ifdef XLNT_USE_LOCALE_POINT_THOUSAND_SEPARATOR
+        register_test(test_shared_string_point_thousand_separator);
+#endif
         register_test(test_Issue445_inline_str_load);
         register_test(test_Issue445_inline_str_streaming_read);
         register_test(test_Issue492_stream_empty_row);
@@ -88,8 +95,9 @@ public:
 #endif
         register_test(test_Issue6_google_missing_workbookView);
         register_test(test_non_contiguous_selection);
-        register_test(test_Issue41_empty_fill)
-        register_test(test_value_with_default)
+        register_test(test_Issue41_empty_fill);
+        register_test(test_value_with_default);
+        register_test(test_coalesce_column_properties);
     }
 
     bool workbook_matches_file(xlnt::workbook &wb, const xlnt::path &file)
@@ -430,6 +438,61 @@ public:
         xlnt_assert_equals(sheet2.cell("A1").value<std::string>(), "Sheet2!A1");
         xlnt_assert_equals(sheet2.cell("A1").comment().plain_text(), "Sheet2 comment");
         xlnt_assert_equals(sheet2.cell("A1").comment().author(), "Microsoft Office User");
+    }
+
+    void test_invalid_worksheet_title()
+    {
+        xlnt::workbook wb;
+        xlnt::detail::xlsx_consumer consumer(wb);
+        xlnt_assert_throws(consumer.read_worksheet_begin("TEST_INVALID"), xlnt::key_not_found);
+    }
+
+    void test_write_invalid_relationship()
+    {
+        xlnt::workbook wb;
+        xlnt::detail::xlsx_producer producer(wb);
+        xlnt_assert_throws(producer.write_worksheet(xlnt::relationship{}), xlnt::key_not_found);
+    }
+
+    void test_read_rooted_image_relationship()
+    {
+        std::stringstream source(std::ios::in | std::ios::out | std::ios::binary);
+        {
+            xlnt::detail::ozstream archive(source);
+            auto relationship_buffer = archive.open(xlnt::path("xl/drawings/_rels/drawing1.xml.rels"));
+            std::ostream relationship_stream(relationship_buffer.get());
+            relationship_stream
+                << "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+                << "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+                << "<Relationship Id=\"rId1\" "
+                << "Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" "
+                << "Target=\"/xl/media/image1.bmp\"/>"
+                << "</Relationships>";
+        }
+
+        source.seekg(0);
+        xlnt::workbook workbook;
+        xlnt::detail::xlsx_consumer consumer(workbook);
+        consumer.archive_.reset(new xlnt::detail::izstream(source));
+
+        const auto drawing_path = xlnt::path("xl/drawings/drawing1.xml");
+        const auto relationships = consumer.read_relationships(drawing_path);
+        xlnt_assert_equals(relationships.size(), 1);
+        xlnt_assert_equals(relationships.front().target().path().string(), "../media/image1.bmp");
+        xlnt_assert_equals(
+            relationships.front().target().path().resolve(drawing_path.parent()).string(), "xl/media/image1.bmp");
+
+        std::stringstream destination(std::ios::in | std::ios::out | std::ios::binary);
+        xlnt::detail::xlsx_producer producer(workbook);
+        producer.archive_.reset(new xlnt::detail::ozstream(destination));
+        producer.write_relationships(relationships, drawing_path);
+        producer.end_part();
+        producer.archive_.reset();
+
+        destination.seekg(0);
+        xlnt::detail::izstream saved_archive(destination);
+        const auto saved_relationships = saved_archive.read(xlnt::path("xl/drawings/_rels/drawing1.xml.rels"));
+        xlnt_assert(saved_relationships.find("Target=\"../media/image1.bmp\"") != std::string::npos);
     }
 
     void test_read_hyperlink()
@@ -778,6 +841,58 @@ public:
         std::locale::global(current);*/
     }
 
+    void test_shared_string_point_thousand_separator()
+    {
+        // Regression test for a bug where write_characters serialised the shared string index of
+        // a <c t="s"><v> element (an integer) through libstudxml's default_value_traits<T>::serialize,
+        // which formats through a std::ostringstream imbued with the *global* C++ locale. Under a
+        // locale that groups digits with '.' as the thousands separator, e.g. shared string index
+        // 1199 was written as "1.199" instead of "1199", corrupting the workbook.
+        // The corruption only appears once a shared string index reaches four digits, so the sheet
+        // below is populated with 1200 distinct string cells to make sure the bug would trigger.
+        test_helpers::SetLocale set_locale(XLNT_LOCALE_POINT_THOUSAND_SEPARATOR, nullptr, ".");
+
+        xlnt::workbook wb;
+        auto ws = wb.active_sheet();
+
+        const xlnt::row_t num_strings = 1200;
+
+        for (xlnt::row_t row = 1; row <= num_strings; ++row)
+        {
+            ws.cell(1, row).value("value_" + std::to_string(row));
+        }
+
+        std::vector<std::uint8_t> data;
+        wb.save(data);
+
+        // Check the raw serialised content directly: round-tripping alone would not catch a shared
+        // string index written as "1.199", since xlnt's own parser is happy to read it back as 1199.
+        xlnt::detail::vector_istreambuf buffer(data);
+        std::istream stream(&buffer);
+        xlnt::detail::izstream archive(stream);
+
+        std::unique_ptr<std::streambuf> ws_buffer = archive.open(xlnt::path("xl/worksheets/sheet1.xml"));
+        std::istream ws_stream(ws_buffer.get());
+        xml::parser parser(ws_stream, "sheet1.xml");
+
+        xlnt_assert(xml_helper::find_element(parser, "worksheet"));
+        xlnt_assert(xml_helper::find_element(parser, "sheetData"));
+
+        for (xlnt::row_t row = 1; row <= num_strings; ++row)
+        {
+            xlnt_assert(xml_helper::find_element(parser, "row"));
+            parser.attribute_map(); // mark the "r" and "spans" attributes as handled
+            xlnt_assert(xml_helper::find_element(parser, "c"));
+            xlnt_assert_equals(parser.attribute("t"), "s");
+            parser.attribute_map(); // mark the remaining "r" attribute as handled
+            xlnt_assert(xml_helper::find_element(parser, "v"));
+            xlnt_assert_equals(parser.element(), std::to_string(row - 1));
+
+            xlnt_assert_equals(parser.next(), xml::parser::end_element); // </c>
+            xlnt_assert_equals(parser.next(), xml::parser::end_element); // </row>
+        }
+    }
+
     void test_Issue445_inline_str_load()
     {
         xlnt::workbook wb;
@@ -965,6 +1080,38 @@ R"TEST(<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 
             xlnt_assert_equals(wb2.active_sheet().page_setup().scale(), scale);
         }
+    }
+
+    void test_coalesce_column_properties()
+    {
+        xlnt::workbook wb;
+        auto ws = wb.active_sheet();
+
+        ws.column_properties(1).width = 10;
+        ws.column_properties(2).width = 10;
+        ws.column_properties(3).width = 15;
+
+        std::vector<std::uint8_t> data;
+        wb.save(data);
+
+        xlnt::detail::vector_istreambuf buffer(data);
+        std::istream stream(&buffer);
+        xlnt::detail::izstream archive(stream);
+
+        std::unique_ptr<std::streambuf> ws_buffer = archive.open(xlnt::path("xl/worksheets/sheet1.xml"));
+        std::istream ws_stream(ws_buffer.get());
+        xml::parser parser(ws_stream, "sheet1.xml");
+
+        xlnt_assert (xml_helper::find_element(parser, "worksheet"));
+        xlnt_assert (xml_helper::find_element(parser, "cols"));
+        xlnt_assert (xml_helper::find_element(parser, "col"));
+        xlnt_assert_equals (parser.attribute<xlnt::column_t::index_t>("min"), 1);
+        xlnt_assert_equals (parser.attribute<xlnt::column_t::index_t>("max"), 2);
+        xml_helper::skip_element(parser);
+
+        xlnt_assert (xml_helper::find_element(parser, "col"));
+        xlnt_assert_equals (parser.attribute<xlnt::column_t::index_t>("min"), 3);
+        xlnt_assert_equals (parser.attribute<xlnt::column_t::index_t>("max"), 3);
     }
 };
 

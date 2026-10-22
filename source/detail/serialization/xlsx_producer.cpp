@@ -2291,13 +2291,18 @@ void xlsx_producer::write_worksheet(const relationship &rel)
     static const auto &xmlns_mc = constants::ns("mc");
     static const auto &xmlns_x14ac = constants::ns("x14ac");
 
+    auto it_title = std::find_if(source_.d_->sheet_title_rel_id_map_.begin(), source_.d_->sheet_title_rel_id_map_.end(),
+        [&rel](const std::pair<std::string, std::string> &p) {
+            return p.second == rel.id();
+        });
+    if (it_title == source_.d_->sheet_title_rel_id_map_.end())
+    {
+        throw xlnt::key_not_found(rel.id());
+    }
+    const auto &title = it_title->first;
+
     auto worksheet_part = rel.source().path().parent().append(rel.target().path());
     auto worksheet_rels = source_.manifest().relationships(worksheet_part);
-
-    auto title = std::find_if(source_.d_->sheet_title_rel_id_map_.begin(), source_.d_->sheet_title_rel_id_map_.end(),
-        [&](const std::pair<std::string, std::string> &p) {
-            return p.second == rel.id();
-        })->first;
 
     auto ws = source_.sheet_by_title(title);
 
@@ -2560,9 +2565,18 @@ void xlsx_producer::write_worksheet(const relationship &rel)
 
         const auto &props = ws.column_properties(column);
 
+        // Coalesce a run of consecutive columns that all have identical column_properties
+        // into a single <col min max> range, instead of writing one <col> element per column.
+        auto range_end = column;
+        while (range_end + 1 <= last_column && ws.has_column_properties(range_end + 1)
+            && ws.column_properties(range_end + 1) == props)
+        {
+            ++range_end;
+        }
+
         write_start_element(xmlns, "col");
         write_attribute("min", column.index);
-        write_attribute("max", column.index);
+        write_attribute("max", range_end.index);
 
         if (props.width.is_set())
         {
@@ -2591,6 +2605,8 @@ void xlsx_producer::write_worksheet(const relationship &rel)
         }
 
         write_end_element(xmlns, "col");
+
+        column = range_end;
     }
 
     if (has_column_properties)
@@ -3514,13 +3530,17 @@ void xlsx_producer::write_relationships(const std::vector<xlnt::relationship> &r
     {
         auto rel_iter = std::find_if(relationships.begin(), relationships.end(),
             [&i](const relationship &r) { return r.id() == "rId" + std::to_string(i); });
-        auto relationship = *rel_iter;
+        if (rel_iter == relationships.end())
+        {
+            throw xlnt::key_not_found("rId" + std::to_string(i));
+        }
+        const auto &relationship = *rel_iter;
 
         write_start_element(xmlns, "Relationship");
 
         write_attribute("Id", relationship.id());
         write_attribute("Type", relationship.type());
-        write_attribute("Target", relationship.target().path().string());
+        write_attribute("Target", relationship.target().to_string());
 
         if (relationship.target_mode() == xlnt::target_mode::external)
         {

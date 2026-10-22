@@ -39,6 +39,9 @@
   #include <string_view>
 #endif
 
+
+class serialization_test_suite;
+
 namespace xml {
 class serializer;
 } // namespace xml
@@ -68,9 +71,11 @@ struct worksheet_impl;
 /// <summary>
 /// Handles writing a workbook into an XLSX file.
 /// </summary>
-class xlsx_producer
+class XLNT_API_INTERNAL xlsx_producer
 {
 public:
+    friend class ::serialization_test_suite;
+
 	xlsx_producer(const workbook &target);
 
     ~xlsx_producer();
@@ -231,7 +236,7 @@ private:
             write_attribute(name, value.get());
     }
 
-    template <typename T>
+    template <typename T, typename = typename std::enable_if<!std::is_convertible<T, double>::value>::type>
     void write_characters(T characters, bool preserve_whitespace = false)
     {
         if (preserve_whitespace)
@@ -240,6 +245,28 @@ private:
         }
 
         current_part_serializer_->characters(characters);
+    }
+
+    template <typename T, typename std::enable_if<std::is_floating_point<T>::value, T>::type* = nullptr>
+    void write_characters(T characters, bool preserve_whitespace = false)
+    {
+        if (preserve_whitespace)
+        {
+            write_attribute(xml::qname(constants::ns("xml"), "space"), "preserve");
+        }
+
+        current_part_serializer_->characters(xlnt::detail::serialise(characters));
+    }
+
+    template <typename T, typename std::enable_if<std::is_integral<T>::value, T>::type* = nullptr>
+    void write_characters(T characters, bool preserve_whitespace = false)
+    {
+        if (preserve_whitespace)
+        {
+            write_attribute(xml::qname(constants::ns("xml"), "space"), "preserve");
+        }
+
+        current_part_serializer_->characters(std::to_string(characters));
     }
 
 	/// <summary>

@@ -61,6 +61,8 @@
 #include <detail/serialization/vector_streambuf.hpp>
 #include <detail/serialization/xlsx_consumer.hpp>
 #include <detail/serialization/xlsx_producer.hpp>
+#include <detail/utils/error_helpers.hpp>
+#include <detail/utils/stream_helpers.hpp>
 
 namespace {
 
@@ -598,7 +600,7 @@ void workbook::register_workbook_part(relationship_type type)
     {
         manifest().register_override_type(default_path(type), content_type(type));
         manifest().register_relationship(uri(wb_path.string()), type,
-            uri(default_path(type).relative_to(wb_path.resolve(path("/"))).string()),
+            uri(default_path(type).relative_to(wb_path.parent().resolve(path("/"))).string()),
             target_mode::internal);
     }
 }
@@ -1017,11 +1019,18 @@ void workbook::load(const std::string &filename)
 void workbook::load(const path &filename)
 {
     std::ifstream file_stream;
-    open_stream(file_stream, filename.string());
 
-    if (!file_stream.good())
+    try
     {
-        throw xlnt::invalid_file(filename.string());
+        // Exception handling could provide useful information about why errors have occurred.
+        xlnt::detail::stream_scoped_exception_mask<char> mask(file_stream, std::istream::failbit | std::istream::badbit);
+        open_stream(file_stream, filename.string());
+    }
+    catch (const std::exception &ex)
+    {
+        auto saved_errno = errno;
+        throw xlnt::invalid_file("Could not open file at path \"" + filename.string() + "\". Reason: \"" + ex.what() +
+            "\" (internal error " + std::to_string(saved_errno) + ": " + detail::strerror_safe(saved_errno) + ")");
     }
 
     load(file_stream);
@@ -1036,11 +1045,18 @@ template <typename T>
 void workbook::load_internal(const xlnt::path &filename, const T &password)
 {
     std::ifstream file_stream;
-    open_stream(file_stream, filename.string());
 
-    if (!file_stream.good())
+    try
     {
-        throw xlnt::invalid_file(filename.string());
+        // Exception handling could provide useful information about why errors have occurred.
+        xlnt::detail::stream_scoped_exception_mask<char> mask(file_stream, std::istream::failbit | std::istream::badbit);
+        open_stream(file_stream, filename.string());
+    }
+    catch (const std::exception &ex)
+    {
+        auto saved_errno = errno;
+        throw xlnt::invalid_file("Could not open file at path \"" + filename.string() + "\". Reason: \"" + ex.what() +
+            "\" (internal error " + std::to_string(saved_errno) + ": " + detail::strerror_safe(saved_errno) + ")");
     }
 
     return load(file_stream, password);
@@ -2140,6 +2156,11 @@ void workbook::reorder_relationships()
     {
         auto rel_it = std::find_if(rel_copy.begin(), rel_copy.end(),
             [&](const relationship &rel) { return rel.id() == worksheet_rel_ids[index]; });
+
+        if (rel_it == rel_copy.end())
+        {
+            throw xlnt::key_not_found(worksheet_rel_ids[index]);
+        }
 
         std::string rel_id = new_id();
         d_->sheet_title_rel_id_map_.at(titles[index - 1]) = rel_id; // update title -> relation mapping
